@@ -7,7 +7,8 @@ NibeGwComponent::NibeGwComponent(esphome::GPIOPin *dir_pin) {
   gw_ = new NibeGw(this, dir_pin);
   gw_->setCallback(
       std::bind(&NibeGwComponent::callback_msg_received, this, std::placeholders::_1, std::placeholders::_2),
-      std::bind(&NibeGwComponent::callback_msg_token_received, this, std::placeholders::_1, std::placeholders::_2));
+      std::bind(&NibeGwComponent::callback_msg_token_received, this, std::placeholders::_1, std::placeholders::_2,
+                std::placeholders::_3));
 
   udp_read_.onPacket([this](AsyncUDPPacket packet) { token_request_cache(packet, MODBUS40, READ_TOKEN); });
   udp_write_.onPacket([this](AsyncUDPPacket packet) { token_request_cache(packet, MODBUS40, WRITE_TOKEN); });
@@ -40,7 +41,6 @@ void NibeGwComponent::callback_msg_received(const byte *const data, int len) {
     return;
   }
 
-  ESP_LOGD(TAG, "UDP Packet with %d bytes to send", len);
   for (auto target = udp_targets_.begin(); target != udp_targets_.end(); target++) {
     ip_addr_t address = (ip_addr_t) std::get<0>(*target);
     if (!udp_read_.writeTo(data, len, &address, std::get<1>(*target))) {
@@ -59,7 +59,7 @@ void NibeGwComponent::token_request_cache(AsyncUDPPacket &udp, byte address, byt
     return;
   }
 
-  ESP_LOGD(TAG, "UDP Packet token data of %d bytes received", size);
+  ESP_LOGV(TAG, "UDP Packet token data of %d bytes received", size);
 
   if (size > MAX_DATA_LEN) {
     ESP_LOGE(TAG, "UDP Packet too large: %d", size);
@@ -83,8 +83,8 @@ static int copy_request(const request_data_type &request, byte *data) {
   return len;
 }
 
-int NibeGwComponent::callback_msg_token_received(eTokenType token, byte *data) {
-  request_key_type key{data[2] | (data[1] << 8), static_cast<byte>(token)};
+int NibeGwComponent::callback_msg_token_received(uint16_t address, byte command, byte *data) {
+  request_key_type key{address, command};
 
   {
     const auto &it = requests_.find(key);
