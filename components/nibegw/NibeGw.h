@@ -36,16 +36,13 @@
 #ifndef NibeGw_h
 #define NibeGw_h
 
-#include <Arduino.h>
+#include <cstdint>
 #include "esphome/components/uart/uart.h"
 #include "esphome/core/gpio.h"
 #include <functional>
 #include <set>
 
 using namespace esphome;
-
-// #define HARDWARE_SERIAL_WITH_PINS
-// #define HARDWARE_SERIAL
 
 // state machine states
 enum eState {
@@ -72,12 +69,19 @@ enum eStartByte {
   STARTBYTE_NACK = 0x15,
 };
 
+enum eParse {
+  PACKET_PENDING,
+  PACKET_ERR,
+  PACKET_OK,
+};
+
 // message buffer for RS-485 communication. Max message length is 80 bytes + 6 bytes header
 #define MAX_DATA_LEN 128
 
-typedef std::function<void(const byte *const data, int len)> callback_msg_received_type;
-typedef std::function<int(uint16_t address, byte command, byte *data)> callback_msg_token_received_type;
+typedef std::function<void(const uint8_t *data, int len)> callback_msg_received_type;
+typedef std::function<int(uint16_t address, uint8_t command, uint8_t *data)> callback_msg_token_received_type;
 
+#define AXC40 0x05
 #define SMS40 0x16
 #define RMU40 0x19
 #define RMU40_S1 0x19
@@ -85,13 +89,15 @@ typedef std::function<int(uint16_t address, byte command, byte *data)> callback_
 #define RMU40_S3 0x1B
 #define RMU40_S4 0x1C
 #define MODBUS40 0x20
+#define DEH500 0x27
+#define EME20 0xA4
 
 class NibeGw {
  private:
   eState state;
-  boolean connectionState;
+  bool connectionState;
   esphome::GPIOPin *directionPin;
-  byte buffer[MAX_DATA_LEN * 2];
+  uint8_t buffer[MAX_DATA_LEN * 2];
   size_t index;
   size_t indexSlave;
   esphome::uart::UARTDevice *RS485;
@@ -99,19 +105,19 @@ class NibeGw {
   callback_msg_token_received_type callback_msg_token_received;
   std::set<uint16_t> addressAcknowledge;
 
-  byte calculateChecksum(const byte *const data, byte len);
-  void sendData(const byte *const data, byte len);
+  uint8_t calculateChecksum(const uint8_t *data, uint8_t len);
+  void sendData(const uint8_t *data, uint8_t len);
   void sendBegin();
   void sendEnd();
-  boolean shouldAckNakSend(uint16_t address);
-  void handleInvalidData(byte data);
+  bool shouldAckNakSend(uint16_t address);
+  void handleInvalidData(uint8_t data);
   void handleCrcFailure();
   void handleMsgReceived();
-  void handleDataReceived(byte b);
-  void handleExpectedAck(byte b);
+  void handleDataReceived(uint8_t b);
+  void handleExpectedAck(uint8_t b);
   void stateCompleteNak();
   void stateCompleteAck();
-  void stateComplete(byte data);
+  void stateComplete(uint8_t data);
 
   const char *TAG = "nibeGW";
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
@@ -126,24 +132,26 @@ class NibeGw {
 
   void connect();
   void disconnect();
-  boolean connected();
-  boolean messageStillOnProgress();
+  bool connected();
+  bool messageStillOnProgress();
   void loop();
+  eParse checkSlaveData(const uint8_t *data, size_t len);
+  eParse checkMasterData(const uint8_t *data, size_t len);
 
-  void setAcknowledge(byte address, boolean val) {
+  void setAcknowledge(uint8_t address, bool val) {
     if (val)
       addressAcknowledge.insert(address);
     else
       addressAcknowledge.erase(address);
   }
 
-  void setAckModbus40Address(boolean val) {
+  void setAckModbus40Address(bool val) {
     setAcknowledge(MODBUS40, val);
   }
-  void setAckSms40Address(boolean val) {
+  void setAckSms40Address(bool val) {
     setAcknowledge(SMS40, val);
   }
-  void setAckRmu40Address(boolean val) {
+  void setAckRmu40Address(bool val) {
     setAcknowledge(RMU40, val);
   }
 };

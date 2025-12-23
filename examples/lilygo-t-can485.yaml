@@ -4,6 +4,8 @@ esphome:
 
 esp32:
   board: esp32dev
+  framework:
+    type: esp-idf
 
 # General ESPHome setup
 api:
@@ -11,13 +13,13 @@ api:
 
 ota:
   - platform: esphome
-    password: !secret OTA_PASSWORD
+    password: !secret ota_password
 
 logger:
 
 wifi:
-  ssid: !secret WIFI_SSID
-  password: !secret WIFI_PASSWORD
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
   fast_connect: true # Fast connect to connect to my hidden network
   # It is recommended to disable powersave mode on wifi, to make sure the device does not miss UDP requests sent.
   power_save_mode: none
@@ -54,12 +56,6 @@ uart:
 # Configure NibeGW
 nibegw:
   udp:
-    # The target address(s) to send data to. May be a multicast address.
-    # When using Home Assistant: this is your Home Assistant IP.
-    target:
-      - ip: 192.168.255.254
-        port: 9999 #The Nibe Home Assistant integration listens to 9999 by default 
-
     # List of source address to accept data from, may be empty for no filter
     source:
       - 192.168.255.254

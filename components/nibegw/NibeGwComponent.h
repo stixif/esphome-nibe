@@ -4,33 +4,35 @@
 #include <queue>
 #include <vector>
 #include <cstddef>
+#include <cstdint>
 #include <map>
+#include <memory>
 
-#include "esphome.h"
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
+#include "esphome/core/log.h"
 #include "esphome/components/uart/uart.h"
+#include "esphome/components/network/ip_address.h"
+#include "esphome/components/network/util.h"
+#include "esphome/components/socket/socket.h"
 
 #include "NibeGw.h"
-
-#ifdef USE_ESP32
-#include <WiFi.h>
-#include "AsyncUDP.h"
-#endif
-
-#ifdef USE_ESP8266
-#include <ESP8266WiFi.h>
-#include "ESPAsyncUDP.h"
-#endif
+#include "NibeGwSockAddress.h"
 
 namespace esphome {
 namespace nibegw {
 
-typedef std::tuple<uint16_t, byte> request_key_type;
-typedef std::vector<byte> request_data_type;
+using namespace std;
+
+typedef std::tuple<uint16_t, uint8_t> request_key_type;
+typedef std::vector<uint8_t> request_data_type;
 typedef std::function<request_data_type(void)> request_provider_type;
-typedef std::tuple<network::IPAddress, int> target_type;
 typedef std::function<void(const request_data_type &)> message_listener_type;
+
+struct request_socket_type {
+  int port;
+  std::unique_ptr<socket::Socket> socket;
+};
 
 class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDevice {
   float get_setup_priority() const override {
@@ -38,44 +40,42 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
   }
   const char *TAG = "nibegw";
   const int requests_queue_max = 3;
-  int udp_read_port_ = 9999;
-  int udp_write_port_ = 10000;
-  std::vector<network::IPAddress> udp_source_ip_;
+  const uint32_t target_timeout_ms_ = 120000;
   bool is_connected_ = false;
 
-  std::vector<target_type> udp_targets_;
+  std::vector<socket_address> udp_sources_;
+  std::vector<socket_address> udp_targets_static_;
+  std::map<socket_address, uint32_t> udp_targets_;
   std::map<request_key_type, std::queue<request_data_type>> requests_;
   std::map<request_key_type, request_provider_type> requests_provider_;
+  std::map<request_key_type, request_socket_type> requests_sockets_;
   std::map<request_key_type, message_listener_type> message_listener_;
   HighFrequencyLoopRequester high_freq_;
 
   NibeGw *gw_;
 
-  AsyncUDP udp_read_;
-  AsyncUDP udp_write_;
+  void callback_msg_received(const uint8_t *data, int len);
+  int callback_msg_token_received(uint16_t address, uint8_t command, uint8_t *data);
+  void callback_debug(uint8_t verbose, char *data);
 
-  void callback_msg_received(const byte *const data, int len);
-  int callback_msg_token_received(uint16_t address, byte command, byte *data);
-  void callback_debug(byte verbose, char *data);
+  void run_request_socket(const request_key_type &key, request_socket_type &data);
+  void recv_local_socket(std::unique_ptr<socket::Socket> &fd, int address, int token);
 
-  void token_request_cache(AsyncUDPPacket &udp, byte address, byte token);
+  std::unique_ptr<socket::Socket> bind_local_socket(int port);
 
  public:
-  void set_read_port(int port) {
-    udp_read_port_ = port;
-  };
-  void set_write_port(int port) {
-    udp_write_port_ = port;
-  };
-
   void add_target(const network::IPAddress &ip, int port) {
-    auto target = target_type(ip, port);
-    udp_targets_.push_back(target);
+    udp_targets_static_.push_back(socket_address(ip, port));
   }
 
   void add_source_ip(const network::IPAddress &ip) {
-    udp_source_ip_.push_back(ip);
+    udp_sources_.push_back(socket_address(ip, 0));
   };
+
+  void add_socket_request(int address, int token, int port) {
+    auto &handler = requests_sockets_[request_key_type(address, token)];
+    handler.port = port;
+  }
 
   void set_request(int address, int token, request_data_type request) {
     set_request(address, token, [request] { return request; });
@@ -97,15 +97,19 @@ class NibeGwComponent : public esphome::Component, public esphome::uart::UARTDev
     queue.push(std::move(request));
   }
 
+  void add_acknowledge(int address) {
+    gw_->setAcknowledge(address, true);
+  }
+
   NibeGw &gw() {
     return *gw_;
   }
 
   NibeGwComponent(GPIOPin *dir_pin);
 
-  void setup();
-  void dump_config();
-  void loop();
+  void setup() override;
+  void dump_config() override;
+  void loop() override;
 };
 
 }  // namespace nibegw

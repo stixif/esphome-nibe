@@ -45,7 +45,7 @@ void NibeGw::disconnect() {
   }
 }
 
-boolean NibeGw::connected() {
+bool NibeGw::connected() {
   return connectionState;
 }
 
@@ -57,7 +57,7 @@ NibeGw &NibeGw::setCallback(callback_msg_received_type callback_msg_received,
   return *this;
 }
 
-boolean NibeGw::messageStillOnProgress() {
+bool NibeGw::messageStillOnProgress() {
   if (!connectionState)
     return false;
 
@@ -70,7 +70,7 @@ boolean NibeGw::messageStillOnProgress() {
   return false;
 }
 
-void NibeGw::handleDataReceived(byte b) {
+void NibeGw::handleDataReceived(uint8_t b) {
   if (index >= MAX_DATA_LEN) {
     // too long message
     handleInvalidData(b);
@@ -116,47 +116,40 @@ void NibeGw::handleDataReceived(byte b) {
     case STATE_WAIT_DATA_SLAVE: {
       buffer[index++] = b;
 
-      // make sure we have start, cmd, len
-      if (index < indexSlave + 3) {
+      eParse check = checkSlaveData(&buffer[indexSlave], index - indexSlave);
+      if (check == PACKET_PENDING) {
         break;
       }
 
-      // make sure we have start, cmd, len, data[len], checksum
-      if (index < indexSlave + buffer[indexSlave + 2] + 4) {
+      if (check == PACKET_OK) {
+        ESP_LOGV(TAG, "Received token %02X and response", buffer[3]);
+        state = STATE_WAIT_ACK;
         break;
       }
 
-      ESP_LOGV(TAG, "Received token %02X and response", buffer[3]);
-      state = STATE_WAIT_ACK;
-    } break;
+      stateComplete(0);
+      break;
+    }
 
     case STATE_WAIT_DATA:
-
       buffer[index++] = b;
 
-      if (index < 5) {
-        // wait for start, address, cmd, len
+      eParse check = checkMasterData(buffer, index);
+      if (check == PACKET_PENDING) {
         break;
       }
 
-      const byte len = buffer[4];
-      if (index < len + 6) {
-        // wait for start, address, cmd, len, data[len], checksum
-        break;
-      }
-
-      const byte checksum = buffer[len + 5];
-      const byte expected = calculateChecksum(&buffer[1], len + 4);
-      if (checksum == expected) {
+      if (check == PACKET_OK) {
         handleMsgReceived();
-      } else {
-        handleCrcFailure();
+        break;
       }
+
+      handleCrcFailure();
       break;
   }
 }
 
-void NibeGw::handleExpectedAck(byte b) {
+void NibeGw::handleExpectedAck(uint8_t b) {
   buffer[index++] = b;
   ESP_LOGV(TAG, "Recv: %02X", b);
   if (b == STARTBYTE_ACK || b == STARTBYTE_NACK) {
@@ -170,10 +163,10 @@ void NibeGw::handleExpectedAck(byte b) {
   stateComplete(b);
 }
 
-void NibeGw::stateComplete(byte data) {
+void NibeGw::stateComplete(uint8_t data) {
   if (index) {
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
-    for (byte i = 0; i < index && i < DEBUG_BUFFER_LEN / 3; i++) {
+    for (uint8_t i = 0; i < index && i < DEBUG_BUFFER_LEN / 3; i++) {
       sprintf(debug_buf + i * 3, "%02X ", buffer[i]);
     }
     ESP_LOGV(TAG, "Recv: %s", debug_buf);
@@ -204,11 +197,7 @@ void NibeGw::handleMsgReceived() {
       stateCompleteAck();
     }
   } else {
-    if (len == 0) {
-      state = STATE_WAIT_START_SLAVE;
-    } else {
-      state = STATE_WAIT_ACK;
-    }
+    state = STATE_WAIT_START_SLAVE;
   }
 }
 
@@ -221,7 +210,7 @@ void NibeGw::handleCrcFailure() {
   }
 }
 
-void NibeGw::handleInvalidData(byte data) {
+void NibeGw::handleInvalidData(uint8_t data) {
   ESP_LOGW(TAG, "Had invalid message");
   stateComplete(data);
 }
@@ -231,15 +220,15 @@ void NibeGw::loop() {
     return;
 
   if (RS485->available() > 0) {
-    byte b = RS485->read();
+    uint8_t b = RS485->read();
     ESP_LOGVV(TAG, "%02X", b);
     handleDataReceived(b);
   }
 }
 
-byte NibeGw::calculateChecksum(const byte *const data, byte len) {
-  byte checksum = 0;
-  for (byte i = 0; i < len; i++) {
+uint8_t NibeGw::calculateChecksum(const uint8_t *const data, uint8_t len) {
+  uint8_t checksum = 0;
+  for (uint8_t i = 0; i < len; i++) {
     checksum ^= data[i];
   }
 
@@ -266,13 +255,13 @@ void NibeGw::sendEnd() {
   }
 }
 
-void NibeGw::sendData(const byte *const data, byte len) {
+void NibeGw::sendData(const uint8_t *const data, uint8_t len) {
   sendBegin();
   RS485->write_array(data, len);
   sendEnd();
 
 #if ESPHOME_LOG_LEVEL >= ESPHOME_LOG_LEVEL_VERBOSE
-  for (byte i = 0; i < len && i < DEBUG_BUFFER_LEN / 3; i++) {
+  for (uint8_t i = 0; i < len && i < DEBUG_BUFFER_LEN / 3; i++) {
     sprintf(debug_buf + i * 3, "%02X ", data[i]);
   }
   ESP_LOGV(TAG, "Sent: %s", debug_buf);
@@ -299,6 +288,61 @@ void NibeGw::stateCompleteNak() {
   stateComplete(0);
 }
 
-boolean NibeGw::shouldAckNakSend(uint16_t address) {
+bool NibeGw::shouldAckNakSend(uint16_t address) {
   return addressAcknowledge.count(address) != 0;
+}
+
+eParse NibeGw::checkSlaveData(const uint8_t *data, size_t len) {
+  /* start, cmd, len, data[len], checksum */
+  if (len < 4) {
+    return PACKET_PENDING;
+  }
+
+  if (data[0] != STARTBYTE_SLAVE) {
+    ESP_LOGD(TAG, "Slave start byte is invalid");
+    return PACKET_ERR;
+  }
+
+  if (len - 4 < data[2]) {
+    return PACKET_PENDING;
+  }
+
+  if (len - 4 != data[2]) {
+    ESP_LOGD(TAG, "Slave packet has invalid size");
+    return PACKET_ERR;
+  }
+
+  const uint8_t checksum = calculateChecksum(data, len - 1);
+  if (data[len - 1] != checksum) {
+    ESP_LOGD(TAG, "Slave data checksum is invalid");
+    return PACKET_ERR;
+  }
+  return PACKET_OK;
+}
+
+eParse NibeGw::checkMasterData(const uint8_t *data, size_t len) {
+  /* start, address1, address2, cmd, len, data[len], checksum */
+  if (len < 6) {
+    return PACKET_PENDING;
+  }
+  if (data[0] != STARTBYTE_MASTER) {
+    ESP_LOGD(TAG, "Master start byte is invalid");
+    return PACKET_ERR;
+  }
+
+  if (len - 6 < data[4]) {
+    return PACKET_PENDING;
+  }
+
+  if (len - 6 != data[4]) {
+    ESP_LOGD(TAG, "Master packet too large");
+    return PACKET_ERR;
+  }
+
+  const uint8_t checksum = calculateChecksum(&data[1], len - 2);
+  if (data[len - 1] != checksum) {
+    ESP_LOGD(TAG, "Master data checksum is invalid");
+    return PACKET_ERR;
+  }
+  return PACKET_OK;
 }
